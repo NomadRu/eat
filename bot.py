@@ -27,8 +27,7 @@ def get_main_keyboard():
     b.button(text="📊 Статистика пары")
     b.button(text="📢 Попросить партнера")
     b.button(text="🔗 Пригласить партнера")
-    b.button(text="💔 Разорвать пару")
-    b.adjust(2, 2, 2, 1)
+    b.adjust(2, 2, 2)
     return b.as_markup(resize_keyboard=True)
 
 def get_request_keyboard():
@@ -47,6 +46,11 @@ def get_praise_keyboard(target_id):
 def get_invite_keyboard(link):
     b = InlineKeyboardBuilder()
     b.button(text="📤 Поделиться ссылкой", url=f"https://t.me/share/url?url={link}&text=Присоединяйся ко мне в боте!")
+    return b.as_markup()
+
+def get_stats_keyboard():
+    b = InlineKeyboardBuilder()
+    b.button(text="💔 Разорвать пару", callback_data="break_pair")
     return b.as_markup()
 
 @dp.message(CommandStart())
@@ -106,7 +110,7 @@ async def invite_partner(message: types.Message):
     user = await db.ensure_user(uid)
 
     if user["paired"]:
-        await message.answer("Ты уже в паре. Сначала нужно разорвать текущую связь.")
+        await message.answer("Ты уже в паре. Сначала разорви текущую связь в статистике пары.")
         return
 
     code = secrets.token_urlsafe(8)
@@ -121,24 +125,6 @@ async def invite_partner(message: types.Message):
         "Ссылка одноразовая.",
         reply_markup=get_invite_keyboard(link)
     )
-
-@dp.message(F.text == "💔 Разорвать пару")
-async def break_pair(message: types.Message):
-    uid = message.from_user.id
-    user = await db.get_user(uid)
-    if not user or not user["paired"]:
-        await message.answer("Ты не в паре.", reply_markup=get_main_keyboard())
-        return
-
-    partner_id = user["partner_id"]
-    await db.unlink_pair(uid)
-
-    try:
-        await bot.send_message(partner_id, "💔 Твой партнёр разорвал пару.")
-    except Exception:
-        pass
-
-    await message.answer("Пара разорвана.", reply_markup=get_main_keyboard())
 
 @dp.message(F.text == "🍔 Я поел")
 async def ate_food(message: types.Message):
@@ -212,6 +198,26 @@ async def process_praise(callback: types.CallbackQuery):
     await callback.answer("Похвала отправлена!")
     await callback.message.edit_reply_markup(reply_markup=None)
 
+@dp.callback_query(F.data == "break_pair")
+async def break_pair_cb(callback: types.CallbackQuery):
+    uid = callback.from_user.id
+    user = await db.get_user(uid)
+    if not user or not user["paired"]:
+        await callback.answer("Ты не в паре.", show_alert=True)
+        return
+
+    partner_id = await db.unlink_pair(uid)
+
+    try:
+        if partner_id:
+            await bot.send_message(partner_id, "💔 Твой партнёр разорвал пару.")
+    except Exception:
+        pass
+
+    await callback.message.edit_text("💔 Пара разорвана.")
+    await callback.message.answer("Главное меню:", reply_markup=get_main_keyboard())
+    await callback.answer()
+
 @dp.message(F.text == "👤 Профиль")
 async def show_profile(message: types.Message):
     uid = message.from_user.id
@@ -259,7 +265,7 @@ async def couple_stats(message: types.Message):
         f"❤️ Всего похвал: {total_praise}\n\n"
         f"_Вы вместе следите за едой и водой!_"
     )
-    await message.answer(text, parse_mode="Markdown", reply_markup=get_main_keyboard())
+    await message.answer(text, parse_mode="Markdown", reply_markup=get_stats_keyboard())
 
 @dp.message(F.text == "📢 Попросить партнера")
 async def ask_partner(message: types.Message):
