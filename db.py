@@ -9,6 +9,7 @@ async def init_pool():
         dsn=os.getenv("DATABASE_URL"),
         min_size=1,
         max_size=5,
+        statement_cache_size=0,
     )
     async with _pool.acquire() as conn:
         await conn.execute("""
@@ -62,13 +63,14 @@ async def set_partner(user_id, partner_id):
 async def unlink_pair(user_id):
     user = await get_user(user_id)
     if not user or not user["partner_id"]:
-        return
+        return None
     partner_id = user["partner_id"]
     async with _pool.acquire() as conn:
         await conn.execute(
             "UPDATE users SET partner_id = NULL, paired = FALSE WHERE user_id IN ($1, $2)",
             user_id, partner_id,
         )
+    return partner_id
 
 async def create_invite(code, inviter_id):
     async with _pool.acquire() as conn:
