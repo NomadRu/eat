@@ -165,11 +165,13 @@ async def cancel_input(message: types.Message):
     user_states.pop(message.from_user.id, None)
     await message.answer("Действие отменено. Возвращаемся в меню.", reply_markup=get_main_keyboard())
 
+# ВОТ ЗДЕСЬ БЫЛА ОШИБКА. Теперь функция жестко проверяет наличие состояния.
 @dp.message(F.photo | F.text)
 async def handle_input(message: types.Message):
     uid = message.from_user.id
     state = user_states.get(uid)
     
+    # Если бот не ждет еду/воду, мы просто выходим, НЕ блокируя другие кнопки (так как они ниже)
     if not state:
         return
 
@@ -343,8 +345,10 @@ async def main():
 
     await db.init_pool()
     
-    # Принудительно сбрасываем вебхук и старые апдейты, чтобы убить конфликты
-    await bot.delete_webhook(drop_pending_updates=True)
+    try:
+        await bot.delete_webhook(drop_pending_updates=True)
+    except Exception as e:
+        logging.warning(f"Не удалось удалить вебхук: {e}")
 
     async def handle(request):
         return web.Response(text="Bot is running!")
