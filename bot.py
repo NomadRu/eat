@@ -53,9 +53,16 @@ def get_stats_keyboard():
     b.button(text="💔 Разорвать пару", callback_data="break_pair")
     return b.as_markup()
 
+def get_cancel_keyboard():
+    b = ReplyKeyboardBuilder()
+    b.button(text="Отмена")
+    return b.as_markup(resize_keyboard=True)
+
 @dp.message(CommandStart())
 async def cmd_start(message: types.Message):
     uid = message.from_user.id
+    user_states.pop(uid, None)
+    
     await db.ensure_user(uid)
     user = await db.get_user(uid)
 
@@ -106,6 +113,7 @@ async def cmd_start(message: types.Message):
 
 @dp.message(F.text == "🔗 Пригласить партнера")
 async def invite_partner(message: types.Message):
+    user_states.pop(message.from_user.id, None)
     uid = message.from_user.id
     user = await db.ensure_user(uid)
 
@@ -128,20 +136,40 @@ async def invite_partner(message: types.Message):
 
 @dp.message(F.text == "🍔 Я поел")
 async def ate_food(message: types.Message):
-    await db.ensure_user(message.from_user.id)
-    user_states[message.from_user.id] = "waiting_for_food"
-    await message.answer("Что ты съел? Напиши текстом или отправь фото 📸")
+    uid = message.from_user.id
+    state = user_states.get(uid)
+    
+    if state == "waiting_for_water":
+        await message.answer("Сначала допиши или отправь фото того, что ты выпил! (Или нажми 'Отмена')", reply_markup=get_cancel_keyboard())
+        return
+        
+    await db.ensure_user(uid)
+    user_states[uid] = "waiting_for_food"
+    await message.answer("Что ты съел? Напиши текстом или отправь фото 📸", reply_markup=get_cancel_keyboard())
 
 @dp.message(F.text == "💧 Я попил")
 async def drank_water(message: types.Message):
-    await db.ensure_user(message.from_user.id)
-    user_states[message.from_user.id] = "waiting_for_water"
-    await message.answer("Что ты выпил? Напиши текстом или отправь фото 💧")
+    uid = message.from_user.id
+    state = user_states.get(uid)
+    
+    if state == "waiting_for_food":
+        await message.answer("Сначала допиши или отправь фото того, что ты съел! (Или нажми 'Отмена')", reply_markup=get_cancel_keyboard())
+        return
+        
+    await db.ensure_user(uid)
+    user_states[uid] = "waiting_for_water"
+    await message.answer("Что ты выпил? Напиши текстом или отправь фото 💧", reply_markup=get_cancel_keyboard())
+
+@dp.message(F.text == "Отмена")
+async def cancel_input(message: types.Message):
+    user_states.pop(message.from_user.id, None)
+    await message.answer("Действие отменено. Возвращаемся в меню.", reply_markup=get_main_keyboard())
 
 @dp.message(F.photo | F.text)
 async def handle_input(message: types.Message):
     uid = message.from_user.id
     state = user_states.get(uid)
+    
     if not state:
         return
 
@@ -220,6 +248,7 @@ async def break_pair_cb(callback: types.CallbackQuery):
 
 @dp.message(F.text == "👤 Профиль")
 async def show_profile(message: types.Message):
+    user_states.pop(message.from_user.id, None)
     uid = message.from_user.id
     data = await db.ensure_user(uid)
 
@@ -245,6 +274,7 @@ async def show_profile(message: types.Message):
 
 @dp.message(F.text == "📊 Статистика пары")
 async def couple_stats(message: types.Message):
+    user_states.pop(message.from_user.id, None)
     uid = message.from_user.id
     data = await db.ensure_user(uid)
 
@@ -269,6 +299,7 @@ async def couple_stats(message: types.Message):
 
 @dp.message(F.text == "📢 Попросить партнера")
 async def ask_partner(message: types.Message):
+    user_states.pop(message.from_user.id, None)
     data = await db.ensure_user(message.from_user.id)
     if not data["paired"]:
         await message.answer("Сначала пригласи партнёра.", reply_markup=get_main_keyboard())
