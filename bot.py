@@ -1,125 +1,172 @@
 import asyncio
 import os
 import logging
+import secrets
 from aiogram import Bot, Dispatcher, types, F
-from aiogram.filters import Command
+from aiogram.filters import Command, CommandStart
 from aiogram.utils.keyboard import ReplyKeyboardBuilder, InlineKeyboardBuilder
 
-# Настройка логов
 logging.basicConfig(level=logging.INFO)
 
-# Токен берем из переменной окружения (на Render мы ее добавим)
 TOKEN = os.getenv("BOT_TOKEN")
 if not TOKEN:
-    raise ValueError("Токен не найден! Добавь BOT_TOKEN в переменные окружения.")
+    raise ValueError("BOT_TOKEN not set")
 
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
-# --- "База данных" в памяти (для сырой версии) ---
-# Структура: {user_id: {"partner_id": id, "eaten": 0, "drunk": 0, "praised": 0}}
 users_db = {}
-# Хранилище состояний: {user_id: "waiting_for_food" | "waiting_for_water"}
 user_states = {}
+invites = {}
 
-# --- Клавиатуры ---
+def new_user():
+    return {"partner_id": None, "eaten": 0, "drunk": 0, "praised": 0, "paired": False}
+
+def ensure_user(uid):
+    if uid not in users_db:
+        users_db[uid] = new_user()
+
 def get_main_keyboard():
-    builder = ReplyKeyboardBuilder()
-    builder.button(text="🍔 Я поел")
-    builder.button(text="💧 Я попил")
-    builder.button(text="👤 Профиль")
-    builder.button(text="📢 Попросить партнера")
-    builder.adjust(2)
-    return builder.as_markup(resize_keyboard=True)
+    b = ReplyKeyboardBuilder()
+    b.button(text="🍔 Я поел")
+    b.button(text="💧 Я попил")
+    b.button(text="👤 Профиль")
+    b.button(text="📊 Статистика пары")
+    b.button(text="📢 Попросить партнера")
+    b.button(text="🔗 Пригласить партнера")
+    b.adjust(2, 2, 2)
+    return b.as_markup(resize_keyboard=True)
 
 def get_request_keyboard():
-    builder = ReplyKeyboardBuilder()
-    builder.button(text="Попросить поесть")
-    builder.button(text="Попросить попить")
-    builder.button(text="Назад")
-    builder.adjust(2)
-    return builder.as_markup(resize_keyboard=True)
+    b = ReplyKeyboardBuilder()
+    b.button(text="Попросить поесть")
+    b.button(text="Попросить попить")
+    b.button(text="Назад")
+    b.adjust(2, 1)
+    return b.as_markup(resize_keyboard=True)
 
 def get_praise_keyboard(target_id):
-    builder = InlineKeyboardBuilder()
-    builder.button(text="❤️ Похвалить", callback_data=f"praise:{target_id}")
-    return builder.as_markup()
+    b = InlineKeyboardBuilder()
+    b.button(text="❤️ Похвалить", callback_data=f"praise:{target_id}")
+    return b.as_markup()
 
-# --- Хэндлеры ---
-@dp.message(Command("start"))
-async def cmd_start(message: types.Message):
-    # Простая логика: если пользователь новый, просим ID партнера (для простоты сырой версии)
-    # В идеале тут нужна система приглашений, но для теста сгодится и так.
-    user_id = message.from_user.id
-    if user_id not in users_db:
-        users_db[user_id] = {"partner_id": None, "eaten": 0, "drunk": 0, "praised": 0}
-        await message.answer(
-            f"Привет! Твой ID: `{user_id}`.\n"
-            "Чтобы связать аккаунты, попроси партнера узнать свой ID (командой /start) и отправь мне его ID командой:\n"
-            "`/link ID_партнера`\n\n"
-            "А пока можешь пользоваться меню:",
-            reply_markup=get_main_keyboard(),
-            parse_mode="Markdown"
-        )
-    else:
+def get_invite_keyboard(link):
+    b = InlineKeyboardBuilder()
+    b.button(text="📤 Поделиться ссылкой", url=f"https://t.me/share/url?url={link}&text=Присоединяйся ко мне в боте!")
+    return b.as_markup()
+
+@dp.message(CommandStart())
+async def cmd_start(message: types.Message, command: CommandStart = None):
+    uid = message.from_user.id
+    ensure_user(uid)
+
+    if users_db[uid]["paired"]:
         await message.answer("С возвращением! Выбери действие:", reply_markup=get_main_keyboard())
+        return
 
-@dp.message(Command("link"))
-async def cmd_link(message: types.Message):
-    try:
-        partner_id = int(message.text.split()[1])
-        user_id = message.from_user.id
-        if user_id in users_db:
-            users_db[user_id]["partner_id"] = partner_id
-            # Создаем запись для партнера, если ее нет, и связываем обратно
-            if partner_id not in users_db:
-                users_db[partner_id] = {"partner_id": user_id, "eaten": 0, "drunk": 0, "praised": 0}
-            else:
-                users_db[partner_id]["partner_id"] = user_id
-            await message.answer("Вы связаны! Теперь вы будете получать уведомления друг друга.")
-        else:
-            await message.answer("Сначала нажми /start")
-    except (IndexError, ValueError):
-        await message.answer("Ошибка. Используй: `/link ТВОЙ_ID_ПАРТНЕРА`", parse_mode="Markdown")
+    args = message.text.split(maxsplit=1)
+    if len(args) > 1:
+        code = args[1].strip()
+        if code in invites:
+            inviter_id = invites.pop(code)
+
+            if inviter_id == uid:
+                await message.answer("Нельзя связать себя с собой 😅", reply_markup=get_main_keyboard())
+                return
+
+            if inviter_id not in users_db:
+                await message.answer("Приглашение недействительно — пользователь не найден.", reply_markup=get_main_keyboard())
+                return
+
+            if users_db[inviter_id]["paired"] or users_db[uid]["paired"]:
+                await message.answer("Один из вас уже состоит в паре. Сначала нужно разорвать текущую связь.", reply_markup=get_main_keyboard())
+                return
+
+            users_db[uid]["partner_id"] = inviter_id
+            users_db[uid]["paired"] = True
+            users_db[inviter_id]["partner_id"] = uid
+            users_db[inviter_id]["paired"] = True
+
+            partner_name = message.from_user.full_name
+            try:
+                await bot.send_message(
+                    inviter_id,
+                    f"🎉 {partner_name} присоединился(ась) к тебе по ссылке! Теперь вы пара."
+                )
+            except Exception:
+                pass
+
+            await message.answer("🎉 Вы успешно связаны! Теперь вы пара.", reply_markup=get_main_keyboard())
+            return
+
+        await message.answer("Ссылка недействительна или устарела.", reply_markup=get_main_keyboard())
+        return
+
+    await message.answer(
+        f"Привет, {message.from_user.full_name}!\n\n"
+        "Нажми «🔗 Пригласить партнера», чтобы получить ссылку и начать вести учёт вместе.",
+        reply_markup=get_main_keyboard()
+    )
+
+@dp.message(F.text == "🔗 Пригласить партнера")
+async def invite_partner(message: types.Message):
+    uid = message.from_user.id
+    ensure_user(uid)
+
+    if users_db[uid]["paired"]:
+        await message.answer("Ты уже в паре. Сначала нужно разорвать текущую связь.")
+        return
+
+    code = secrets.token_urlsafe(8)
+    invites[code] = uid
+
+    bot_username = (await bot.get_me()).username
+    link = f"https://t.me/{bot_username}?start={code}"
+
+    await message.answer(
+        "Отправь эту ссылку партнёру:\n\n"
+        f"{link}\n\n"
+        "Ссылка одноразовая.",
+        reply_markup=get_invite_keyboard(link)
+    )
 
 @dp.message(F.text == "🍔 Я поел")
 async def ate_food(message: types.Message):
+    ensure_user(message.from_user.id)
     user_states[message.from_user.id] = "waiting_for_food"
     await message.answer("Что ты съел? Напиши текстом или отправь фото 📸")
 
 @dp.message(F.text == "💧 Я попил")
 async def drank_water(message: types.Message):
+    ensure_user(message.from_user.id)
     user_states[message.from_user.id] = "waiting_for_water"
     await message.answer("Что ты выпил? Напиши текстом или отправь фото 💧")
 
 @dp.message(F.photo | F.text)
 async def handle_input(message: types.Message):
-    user_id = message.from_user.id
-    state = user_states.get(user_id)
-    
-    # Если пользователь не в процессе ввода, игнорируем (или можно дать подсказку)
+    uid = message.from_user.id
+    state = user_states.get(uid)
     if not state:
         return
 
-    partner_id = users_db.get(user_id, {}).get("partner_id")
-    content = message.text if message.text else "Фото"
-    
-    # Обновляем счетчики
-    if state == "waiting_for_food":
-        users_db[user_id]["eaten"] += 1
-        action_text = "поел(а)"
-    elif state == "waiting_for_water":
-        users_db[user_id]["drunk"] += 1
-        action_text = "попил(а)"
-    else:
+    if not users_db.get(uid, {}).get("paired"):
+        del user_states[uid]
+        await message.answer("Сначала пригласи партнёра по ссылке (🔗 Пригласить партнера).", reply_markup=get_main_keyboard())
         return
 
-    # Сбрасываем состояние
-    del user_states[user_id]
-    
-    await message.answer("Записано! ✅", reply_markup=get_main_keyboard())
+    partner_id = users_db[uid]["partner_id"]
+    content = message.text if message.text else "Фото"
 
-    # Отправляем партнеру
+    if state == "waiting_for_food":
+        users_db[uid]["eaten"] += 1
+        action_text = "поел(а)"
+    else:
+        users_db[uid]["drunk"] += 1
+        action_text = "попил(а)"
+
+    del user_states[uid]
+    await message.answer("Записано ✅", reply_markup=get_main_keyboard())
+
     if partner_id and partner_id in users_db:
         try:
             user_name = message.from_user.full_name
@@ -127,72 +174,88 @@ async def handle_input(message: types.Message):
                 await bot.send_photo(
                     chat_id=partner_id,
                     photo=message.photo[-1].file_id,
-                    caption=f"❤️ {user_name} {action_text}!\n(Нажми, чтобы похвалить)",
-                    reply_markup=get_praise_keyboard(user_id)
+                    caption=f"❤️ {user_name} {action_text}!",
+                    reply_markup=get_praise_keyboard(uid)
                 )
             else:
                 await bot.send_message(
                     chat_id=partner_id,
-                    text=f"❤️ {user_name} {action_text}: {content}\n(Нажми, чтобы похвалить)",
-                    reply_markup=get_praise_keyboard(user_id)
+                    text=f"❤️ {user_name} {action_text}: {content}",
+                    reply_markup=get_praise_keyboard(uid)
                 )
         except Exception as e:
-            logging.error(f"Не удалось отправить сообщение партнеру: {e}")
+            logging.error(f"Не удалось отправить сообщение партнёру: {e}")
 
-# Обработка кнопки "Похвалить"
 @dp.callback_query(F.data.startswith("praise:"))
 async def process_praise(callback: types.CallbackQuery):
     target_id = int(callback.data.split(":")[1])
     praiser_name = callback.from_user.full_name
-    
+
     if target_id in users_db:
         users_db[target_id]["praised"] += 1
-        
-        # Уведомляем того, кого похвалили
         try:
-            await bot.send_message(
-                chat_id=target_id,
-                text=f"✨ {praiser_name} похвалил(а) вас! Так держать!"
-            )
+            await bot.send_message(target_id, f"✨ {praiser_name} похвалил(а) тебя! Так держать!")
         except Exception:
             pass
-        
         await callback.answer("Похвала отправлена!")
-        # Можно убрать кнопку или изменить текст
         await callback.message.edit_reply_markup(reply_markup=None)
     else:
         await callback.answer("Пользователь не найден.")
 
 @dp.message(F.text == "👤 Профиль")
 async def show_profile(message: types.Message):
-    user_id = message.from_user.id
-    data = users_db.get(user_id)
-    if not data:
-        await message.answer("Нажми /start для регистрации.")
+    uid = message.from_user.id
+    ensure_user(uid)
+    data = users_db[uid]
+
+    if not data["paired"]:
+        await message.answer("Ты пока не в паре. Нажми «🔗 Пригласить партнера».", reply_markup=get_main_keyboard())
         return
-    
-    partner_data = users_db.get(data["partner_id"], {})
-    
+
+    pdata = users_db.get(data["partner_id"], new_user())
+
     text = (
-        f"📊 **Твой профиль**\n"
+        f"📊 *Твой профиль*\n"
         f"🍔 Поел: {data['eaten']}\n"
         f"💧 Попил: {data['drunk']}\n"
         f"❤️ Похвал получено: {data['praised']}\n\n"
-        f"👥 **Партнер**\n"
+        f"👥 *Партнёр*\n"
+        f"🍔 Поел: {pdata['eaten']}\n"
+        f"💧 Попил: {pdata['drunk']}\n"
+        f"❤️ Похвал получено: {pdata['praised']}"
     )
-    if partner_data:
-        text += (
-            f"🍔 Поел: {partner_data.get('eaten', 0)}\n"
-            f"💧 Попил: {partner_data.get('drunk', 0)}\n"
-            f"❤️ Похвал получено: {partner_data.get('praised', 0)}"
-        )
-    else:
-        text += "Партнер еще не привязан. Используй /link"
-    
-    await message.answer(text, parse_mode="Markdown")
+    await message.answer(text, parse_mode="Markdown", reply_markup=get_main_keyboard())
+
+@dp.message(F.text == "📊 Статистика пары")
+async def couple_stats(message: types.Message):
+    uid = message.from_user.id
+    ensure_user(uid)
+    data = users_db[uid]
+
+    if not data["paired"]:
+        await message.answer("Статистика доступна только в паре.", reply_markup=get_main_keyboard())
+        return
+
+    pdata = users_db.get(data["partner_id"], new_user())
+
+    total_eaten = data["eaten"] + pdata["eaten"]
+    total_drunk = data["drunk"] + pdata["drunk"]
+    total_praise = data["praised"] + pdata["praised"]
+
+    text = (
+        f"📈 *Статистика пары*\n\n"
+        f"🍔 Всего поели: {total_eaten}\n"
+        f"💧 Всего попили: {total_drunk}\n"
+        f"❤️ Всего похвал: {total_praise}\n\n"
+        f"_Вы вместе следите за едой и водой!_"
+    )
+    await message.answer(text, parse_mode="Markdown", reply_markup=get_main_keyboard())
 
 @dp.message(F.text == "📢 Попросить партнера")
 async def ask_partner(message: types.Message):
+    if not users_db.get(message.from_user.id, {}).get("paired"):
+        await message.answer("Сначала пригласи партнёра.", reply_markup=get_main_keyboard())
+        return
     await message.answer("Что попросить?", reply_markup=get_request_keyboard())
 
 @dp.message(F.text == "Попросить поесть")
@@ -208,37 +271,31 @@ async def back_to_menu(message: types.Message):
     await message.answer("Главное меню", reply_markup=get_main_keyboard())
 
 async def send_request(message: types.Message, what: str):
-    user_id = message.from_user.id
-    partner_id = users_db.get(user_id, {}).get("partner_id")
-    if partner_id:
-        try:
-            await bot.send_message(
-                chat_id=partner_id,
-                text=f"🔔 Твой партнер просит тебя {what}!"
-            )
-            await message.answer("Запрос отправлен!", reply_markup=get_main_keyboard())
-        except Exception:
-            await message.answer("Не удалось отправить. Возможно, партнер не начинал диалог с ботом.", reply_markup=get_main_keyboard())
-    else:
-        await message.answer("Сначала привяжи партнера через /link", reply_markup=get_main_keyboard())
+    uid = message.from_user.id
+    ensure_user(uid)
+    partner_id = users_db[uid].get("partner_id")
+    if not users_db[uid].get("paired") or not partner_id:
+        await message.answer("Сначала пригласи партнёра.", reply_markup=get_main_keyboard())
+        return
+    try:
+        await bot.send_message(partner_id, f"🔔 Твой партнёр просит тебя {what}!")
+        await message.answer("Запрос отправлен!", reply_markup=get_main_keyboard())
+    except Exception:
+        await message.answer("Не удалось отправить. Возможно, партнёр не начинал диалог с ботом.", reply_markup=get_main_keyboard())
 
-# --- Запуск (с веб-сервером для Render) ---
 async def main():
-    # Render требует, чтобы приложение слушало порт (Web Service)
-    # Запускаем простой сервер, чтобы Render не ругался
     from aiohttp import web
-    
+
     async def handle(request):
         return web.Response(text="Bot is running!")
-    
+
     app = web.Application()
     app.router.add_get("/", handle)
     runner = web.AppRunner(app)
     await runner.setup()
-    site = web.TCPSite(runner, '0.0.0.0', int(os.getenv("PORT", 8080)))
+    site = web.TCPSite(runner, "0.0.0.0", int(os.getenv("PORT", 8080)))
     await site.start()
-    
-    # Запускаем бота
+
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
