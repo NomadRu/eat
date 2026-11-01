@@ -10,6 +10,7 @@ async def init_pool():
         min_size=1,
         max_size=5,
         statement_cache_size=0,
+        command_timeout=10
     )
     async with _pool.acquire() as conn:
         await conn.execute("""
@@ -32,7 +33,14 @@ async def init_pool():
 async def get_user(user_id):
     async with _pool.acquire() as conn:
         row = await conn.fetchrow("SELECT * FROM users WHERE user_id = $1", user_id)
-        return dict(row) if row else None
+        if not row:
+            return None
+        d = dict(row)
+        # Принудительно приводим счетчики к int
+        for k in ("eaten", "drunk", "praised"):
+            if d.get(k) is not None:
+                d[k] = int(d[k])
+        return d
 
 async def ensure_user(user_id):
     async with _pool.acquire() as conn:
