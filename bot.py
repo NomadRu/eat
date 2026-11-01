@@ -342,6 +342,9 @@ async def main():
     from aiohttp import web
 
     await db.init_pool()
+    
+    # Принудительно сбрасываем вебхук и старые апдейты, чтобы убить конфликты
+    await bot.delete_webhook(drop_pending_updates=True)
 
     async def handle(request):
         return web.Response(text="Bot is running!")
