@@ -250,52 +250,60 @@ async def break_pair_cb(callback: types.CallbackQuery):
 async def show_profile(message: types.Message):
     user_states.pop(message.from_user.id, None)
     uid = message.from_user.id
-    data = await db.ensure_user(uid)
+    
+    try:
+        data = await db.ensure_user(uid)
+        if not data["paired"]:
+            await message.answer("Ты пока не в паре. Нажми «🔗 Пригласить партнера».", reply_markup=get_main_keyboard())
+            return
 
-    if not data["paired"]:
-        await message.answer("Ты пока не в паре. Нажми «🔗 Пригласить партнера».", reply_markup=get_main_keyboard())
-        return
+        pdata = await db.get_user(data["partner_id"])
+        if not pdata:
+            pdata = {"eaten": 0, "drunk": 0, "praised": 0}
 
-    pdata = await db.get_user(data["partner_id"])
-    if not pdata:
-        pdata = {"eaten": 0, "drunk": 0, "praised": 0}
-
-    text = (
-        f"📊 *Твой профиль*\n"
-        f"🍔 Поел: {data['eaten']}\n"
-        f"💧 Попил: {data['drunk']}\n"
-        f"❤️ Похвал получено: {data['praised']}\n\n"
-        f"👥 *Партнёр*\n"
-        f"🍔 Поел: {pdata['eaten']}\n"
-        f"💧 Попил: {pdata['drunk']}\n"
-        f"❤️ Похвал получено: {pdata['praised']}"
-    )
-    await message.answer(text, parse_mode="Markdown", reply_markup=get_main_keyboard())
+        text = (
+            f"📊 *Твой профиль*\n"
+            f"🍔 Поел: {data['eaten']}\n"
+            f"💧 Попил: {data['drunk']}\n"
+            f"❤️ Похвал получено: {data['praised']}\n\n"
+            f"👥 *Партнёр*\n"
+            f"🍔 Поел: {pdata['eaten']}\n"
+            f"💧 Попил: {pdata['drunk']}\n"
+            f"❤️ Похвал получено: {pdata['praised']}"
+        )
+        await message.answer(text, parse_mode="Markdown", reply_markup=get_main_keyboard())
+    except Exception as e:
+        logging.error(f"Ошибка профиля: {e}")
+        await message.answer(f"Ошибка при загрузке профиля:\n`{e}`", parse_mode="Markdown")
 
 @dp.message(F.text == "📊 Статистика пары")
 async def couple_stats(message: types.Message):
     user_states.pop(message.from_user.id, None)
     uid = message.from_user.id
-    data = await db.ensure_user(uid)
+    
+    try:
+        data = await db.ensure_user(uid)
+        if not data["paired"]:
+            await message.answer("Статистика доступна только в паре.", reply_markup=get_main_keyboard())
+            return
 
-    if not data["paired"]:
-        await message.answer("Статистика доступна только в паре.", reply_markup=get_main_keyboard())
-        return
+        pdata = await db.get_user(data["partner_id"]) or {"eaten": 0, "drunk": 0, "praised": 0}
 
-    pdata = await db.get_user(data["partner_id"]) or {"eaten": 0, "drunk": 0, "praised": 0}
+        total_eaten = data["eaten"] + pdata["eaten"]
+        total_drunk = data["drunk"] + pdata["drunk"]
+        total_praise = data["praised"] + pdata["praised"]
 
-    total_eaten = data["eaten"] + pdata["eaten"]
-    total_drunk = data["drunk"] + pdata["drunk"]
-    total_praise = data["praised"] + pdata["praised"]
-
-    text = (
-        f"📈 *Статистика пары*\n\n"
-        f"🍔 Всего поели: {total_eaten}\n"
-        f"💧 Всего попили: {total_drunk}\n"
-        f"❤️ Всего похвал: {total_praise}\n\n"
-        f"_Вы вместе следите за едой и водой!_"
-    )
-    await message.answer(text, parse_mode="Markdown", reply_markup=get_stats_keyboard())
+        text = (
+            f"📈 *Статистика пары*\n\n"
+            f"🍔 Всего поели: {total_eaten}\n"
+            f"💧 Всего попили: {total_drunk}\n"
+            f"❤️ Всего похвал: {total_praise}\n\n"
+            f"_Вы вместе следите за едой и водой!_"
+        )
+        await message.answer(text, parse_mode="Markdown", reply_markup=get_stats_keyboard())
+    except Exception as e:
+        logging.error(f"Ошибка статистики: {e}")
+        await message.answer(f"Ошибка при загрузке статистики:\n`{e}`", parse_mode="Markdown")
 
 @dp.message(F.text == "📢 Попросить партнера")
 async def ask_partner(message: types.Message):
