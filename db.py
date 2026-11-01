@@ -1,6 +1,6 @@
 import os
 import asyncpg
-from datetime import date
+from datetime import date, datetime, timedelta
 
 _pool = None
 
@@ -25,16 +25,22 @@ async def init_pool():
                 last_date   DATE
             );
         """)
-        # Добавляем колонку, если база уже была создана старая
-        try:
-            await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS last_date DATE;")
-        except Exception:
-            pass
-            
+        await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS last_date DATE;")
+        
         await conn.execute("""
             CREATE TABLE IF NOT EXISTS invites (
                 code        TEXT PRIMARY KEY,
                 inviter_id  BIGINT NOT NULL
+            );
+        """)
+        
+        await conn.execute("""
+            CREATE TABLE IF NOT EXISTS reminders (
+                id          SERIAL PRIMARY KEY,
+                target_id   BIGINT NOT NULL,
+                sender_name TEXT NOT NULL,
+                message     TEXT NOT NULL,
+                send_at     TIMESTAMP NOT NULL
             );
         """)
 
@@ -44,7 +50,6 @@ async def get_user(user_id):
         if not row:
             return None
         d = dict(row)
-        # Проверяем дату: если это новый день, сбрасываем счетчики
         today = date.today()
         if d.get("last_date") != today:
             await conn.execute("UPDATE users SET eaten=0, drunk=0, last_date=$1 WHERE user_id=$2", today, user_id)
@@ -93,3 +98,19 @@ async def pop_invite(code):
             return None
         await conn.execute("DELETE FROM invites WHERE code = $1", code)
         return row["inviter_id"]
+
+async def add_reminder(target_id, sender_name, message, delay_minutes=30):
+    async with _pool.acquire() as conn:
+        send_at = datetime.now() + timedelta(minutes=delay_minutes)
+        await conn.execute(
+            "INSERT INTO reminders (target_id, sender_name, message, send_at) VALUES ($1, $2, $3, $4)",
+            target_id, sender_name, message, send_at
+        )
+
+async def get_due_reminders():
+    async with _pool.acquire() as conn:
+        rows = await conn.fetch("SELECT * FROM reminders WHERE send_at <= NOW()")
+        if rows:
+            ids = [row["id"] for row in rows]
+            await conn.execute("DELETE FROM reminders WHERE id = ANY($1)", ids)
+        return [dict(r) for r in rows]
