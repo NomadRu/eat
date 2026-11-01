@@ -45,6 +45,12 @@ def get_request_keyboard():
 def get_praise_keyboard(target_id):
     b = InlineKeyboardBuilder()
     b.button(text="💖 Похвалить", callback_data=f"praise:{target_id}")
+    b.button(text="🤗 Обнять", callback_data=f"hug:{target_id}")
+    return b.as_markup()
+
+def get_refuse_keyboard():
+    b = InlineKeyboardBuilder()
+    b.button(text="🙅‍♀️ Я не хочу кушать", callback_data="refuse_food")
     return b.as_markup()
 
 def get_invite_keyboard(link):
@@ -175,15 +181,43 @@ async def ask_partner(message: types.Message, state: FSMContext):
         return
     await message.answer("Что попросить? 🥺", reply_markup=get_request_keyboard())
 
-@dp.message((F.text == "Попросить покушать 🍓") | (F.text.lower() == "поесть"))
+@dp.message((F.text == "Попросить покушать 🍓") | (F.text.lower() == "покушать"))
 async def request_food(message: types.Message, state: FSMContext):
     await state.clear()
-    await send_request(message, "покушать 🍓")
+    uid = message.from_user.id
+    data = await db.ensure_user(uid)
+    if not data["paired"]:
+        await message.answer("Сначала пригласи партнёра.", reply_markup=get_main_keyboard())
+        return
+    try:
+        await bot.send_message(
+            data["partner_id"], 
+            f"🔔 Твой партнёр просит тебя покушать 🍓", 
+            reply_markup=get_refuse_keyboard()
+        )
+        await db.add_reminder(data["partner_id"], message.from_user.full_name, "покушать 🍓")
+        await message.answer("Запрос отправлен! 💌", reply_markup=get_main_keyboard())
+    except Exception:
+        await message.answer("Не удалось отправить.", reply_markup=get_main_keyboard())
 
-@dp.message((F.text == "Попросить водички 💦") | (F.text.lower() == "попить"))
+@dp.message((F.text == "Попросить водички 💦") | (F.text.lower() == "водички"))
 async def request_water(message: types.Message, state: FSMContext):
     await state.clear()
-    await send_request(message, "водички 💦")
+    uid = message.from_user.id
+    data = await db.ensure_user(uid)
+    if not data["paired"]:
+        await message.answer("Сначала пригласи партнёра.", reply_markup=get_main_keyboard())
+        return
+    try:
+        await bot.send_message(
+            data["partner_id"], 
+            f"🔔 Твой партнёр просит тебя водички 💦", 
+            reply_markup=get_refuse_keyboard()
+        )
+        await db.add_reminder(data["partner_id"], message.from_user.full_name, "водички 💦")
+        await message.answer("Запрос отправлен! 💌", reply_markup=get_main_keyboard())
+    except Exception:
+        await message.answer("Не удалось отправить.", reply_markup=get_main_keyboard())
 
 @dp.message((F.text == "Назад") | (F.text.lower() == "назад"))
 async def back_to_menu(message: types.Message, state: FSMContext):
@@ -261,6 +295,29 @@ async def process_praise(callback: types.CallbackQuery):
     await callback.answer("Похвала отправлена! 💕")
     await callback.message.edit_reply_markup(reply_markup=None)
 
+@dp.callback_query(F.data.startswith("hug:"))
+async def process_hug(callback: types.CallbackQuery):
+    target_id = int(callback.data.split(":")[1])
+    try:
+        await bot.send_message(target_id, f"🤗 <b>{callback.from_user.full_name}</b> крепко обнял(а) тебя! 🥰", parse_mode="HTML")
+    except Exception:
+        pass
+    await callback.answer("Обнимашки отправлены! 🤗")
+    await callback.message.edit_reply_markup(reply_markup=None)
+
+@dp.callback_query(F.data == "refuse_food")
+async def process_refuse_food(callback: types.CallbackQuery):
+    # Отвечаем тому, кто нажал
+    await callback.answer("Нельзя не есть, когда любимый человек просит, надо кушать! 🥺", show_alert=True)
+    
+    # Ищем, кто его попросил (это сложно сделать без хранения истории, поэтому просто шлем сообщение партнеру)
+    user = await db.get_user(callback.from_user.id)
+    if user and user["partner_id"]:
+        try:
+            await bot.send_message(user["partner_id"], f"🥺 <b>{callback.from_user.full_name}</b> говорит, что не хочет кушать... Но мы-то знаем, что надо! Переубеди его(её) 💕", parse_mode="HTML")
+        except Exception:
+            pass
+
 @dp.callback_query(F.data == "break_pair")
 async def break_pair_cb(callback: types.CallbackQuery):
     uid = callback.from_user.id
@@ -278,17 +335,19 @@ async def break_pair_cb(callback: types.CallbackQuery):
     await callback.message.answer("Главное меню:", reply_markup=get_main_keyboard())
     await callback.answer()
 
-async def send_request(message: types.Message, what: str):
-    uid = message.from_user.id
-    data = await db.ensure_user(uid)
-    if not data["paired"]:
-        await message.answer("Сначала пригласи партнёра.", reply_markup=get_main_keyboard())
-        return
-    try:
-        await bot.send_message(data["partner_id"], f"🔔 Твой партнёр просит тебя {what}!")
-        await message.answer("Запрос отправлен! 💌", reply_markup=get_main_keyboard())
-    except Exception:
-        await message.answer("Не удалось отправить.", reply_markup=get_main_keyboard())
+# Фоновая задача для напоминаний
+async def reminder_worker():
+    while True:
+        try:
+            due = await db.get_due_reminders()
+            for r in due:
+                try:
+                    await bot.send_message(r["target_id"], f"⏰ Напоминание: <b>{r['sender_name']}</b> 30 минут назад просил(а) тебя {r['message']}!\n\n<i>Не забудь покушать и попить 💕</i>", parse_mode="HTML")
+                except Exception:
+                    pass
+        except Exception as e:
+            logging.error(f"Reminder worker error: {e}")
+        await asyncio.sleep(30) # Проверяем каждые 30 секунд
 
 async def main():
     from aiohttp import web
@@ -297,6 +356,9 @@ async def main():
         await bot.delete_webhook(drop_pending_updates=True)
     except Exception:
         pass
+
+    # Запускаем фоновую задачу
+    asyncio.create_task(reminder_worker())
 
     async def handle(request):
         return web.Response(text="Bot is running!")
