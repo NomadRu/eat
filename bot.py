@@ -307,10 +307,8 @@ async def process_hug(callback: types.CallbackQuery):
 
 @dp.callback_query(F.data == "refuse_food")
 async def process_refuse_food(callback: types.CallbackQuery):
-    # Отвечаем тому, кто нажал
     await callback.answer("Нельзя не есть, когда любимый человек просит, надо кушать! 🥺", show_alert=True)
     
-    # Ищем, кто его попросил (это сложно сделать без хранения истории, поэтому просто шлем сообщение партнеру)
     user = await db.get_user(callback.from_user.id)
     if user and user["partner_id"]:
         try:
@@ -335,7 +333,6 @@ async def break_pair_cb(callback: types.CallbackQuery):
     await callback.message.answer("Главное меню:", reply_markup=get_main_keyboard())
     await callback.answer()
 
-# Фоновая задача для напоминаний
 async def reminder_worker():
     while True:
         try:
@@ -347,7 +344,7 @@ async def reminder_worker():
                     pass
         except Exception as e:
             logging.error(f"Reminder worker error: {e}")
-        await asyncio.sleep(30) # Проверяем каждые 30 секунд
+        await asyncio.sleep(30)
 
 async def main():
     from aiohttp import web
@@ -357,7 +354,6 @@ async def main():
     except Exception:
         pass
 
-    # Запускаем фоновую задачу
     asyncio.create_task(reminder_worker())
 
     async def handle(request):
@@ -367,7 +363,10 @@ async def main():
     app.router.add_get("/", handle)
     runner = web.AppRunner(app)
     await runner.setup()
-    site = web.TCPSite(runner, "0.0.0.0", int(os.getenv("PORT", 8080)))
+    
+    # ИСПРАВЛЕНИЕ ЗДЕСЬ: Render дает порт 10000, берем его
+    port = int(os.getenv("PORT", 10000))
+    site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
 
     await dp.start_polling(bot)
